@@ -1,0 +1,386 @@
+use std::collections::HashMap;
+
+use anyhow::{Context, Result};
+use prometheus::{Gauge, IntGauge, IntGaugeVec, Opts, Registry};
+
+use crate::config::Config;
+
+pub struct CgroupMetrics {
+    pub cpu_usage_seconds: Gauge,
+    pub cpu_user_seconds: Gauge,
+    pub cpu_system_seconds: Gauge,
+    pub cpu_nr_periods: IntGauge,
+    pub cpu_nr_throttled: IntGauge,
+    pub cpu_throttled_seconds: Gauge,
+    pub cpu_limit_cores: Gauge,
+
+    pub mem_current_bytes: Gauge,
+    pub mem_peak_bytes: Gauge,
+    pub mem_max_bytes: Gauge,
+    pub mem_high_bytes: Gauge,
+    pub mem_low_bytes: Gauge,
+    pub mem_events_total: IntGaugeVec,
+}
+
+pub struct ProcessMetrics {
+    pub cpu_user_seconds: Gauge,
+    pub cpu_system_seconds: Gauge,
+    pub start_time_seconds: Gauge,
+
+    pub mem_rss_bytes: Gauge,
+    pub mem_vms_bytes: Gauge,
+    pub mem_swap_bytes: Gauge,
+
+    // IO z /proc/<pid>/io
+    pub io_rchar_bytes_total: Gauge,
+    pub io_wchar_bytes_total: Gauge,
+    pub io_syscr_total: Gauge,
+    pub io_syscw_total: Gauge,
+    pub io_read_bytes_total: Gauge,
+    pub io_write_bytes_total: Gauge,
+    pub io_cancelled_write_bytes_total: Gauge,
+
+    pub uptime_seconds: Gauge, // <- NOVÉ
+}
+
+pub struct Metrics {
+    pub registry: Registry,
+    pub cgroup: CgroupMetrics,
+    pub process: ProcessMetrics,
+    /// DownwardAPI info: field + value, vždy 1 sample
+    pub downward_info: IntGaugeVec,
+}
+
+impl Metrics {
+    pub fn new(cfg: &Config) -> Result<Self> {
+        let registry = Registry::new_custom(None, None)?;
+
+        let cgroup = CgroupMetrics::new(&registry, cfg)?;
+        let process = ProcessMetrics::new(&registry, cfg)?;
+        let downward_info = downward_info_metric(&registry, cfg)?;
+
+        Ok(Self {
+            registry,
+            cgroup,
+            process,
+            downward_info,
+        })
+    }
+}
+
+impl CgroupMetrics {
+    pub fn new(registry: &Registry, cfg: &Config) -> Result<Self> {
+        let cpu_usage_seconds = gauge(
+            registry,
+            cfg,
+            "cgroup_cpu_usage_seconds",
+            "Total CPU time consumed by current cgroup (usage_usec / 1e6)",
+        )?;
+
+        let cpu_user_seconds = gauge(
+            registry,
+            cfg,
+            "cgroup_cpu_user_seconds",
+            "User CPU time for current cgroup (user_usec / 1e6)",
+        )?;
+
+        let cpu_system_seconds = gauge(
+            registry,
+            cfg,
+            "cgroup_cpu_system_seconds",
+            "System CPU time for current cgroup (system_usec / 1e6)",
+        )?;
+
+        let cpu_nr_periods = int_gauge(
+            registry,
+            cfg,
+            "cgroup_cpu_nr_periods_total",
+            "Number of elapsed enforcement periods for current cgroup",
+        )?;
+
+        let cpu_nr_throttled = int_gauge(
+            registry,
+            cfg,
+            "cgroup_cpu_nr_throttled_total",
+            "Number of throttled periods for current cgroup",
+        )?;
+
+        let cpu_throttled_seconds = gauge(
+            registry,
+            cfg,
+            "cgroup_cpu_throttled_seconds",
+            "Total time duration the cgroup has been throttled (throttled_usec / 1e6)",
+        )?;
+
+        let cpu_limit_cores = gauge(
+            registry,
+            cfg,
+            "cgroup_cpu_limit_cores",
+            "Effective CPU limit in cores derived from cpu.max (quota/period), +Inf if unlimited",
+        )?;
+
+        let mem_current_bytes = gauge(
+            registry,
+            cfg,
+            "cgroup_memory_current_bytes",
+            "Current memory usage in bytes (memory.current)",
+        )?;
+
+        let mem_peak_bytes = gauge(
+            registry,
+            cfg,
+            "cgroup_memory_peak_bytes",
+            "Peak memory usage in bytes (memory.peak)",
+        )?;
+
+        let mem_max_bytes = gauge(
+            registry,
+            cfg,
+            "cgroup_memory_max_bytes",
+            "Memory limit in bytes (memory.max or +Inf)",
+        )?;
+
+        let mem_high_bytes = gauge(
+            registry,
+            cfg,
+            "cgroup_memory_high_bytes",
+            "High memory threshold in bytes (memory.high)",
+        )?;
+
+        let mem_low_bytes = gauge(
+            registry,
+            cfg,
+            "cgroup_memory_low_bytes",
+            "Low memory threshold in bytes (memory.low)",
+        )?;
+
+        let mem_events_total = int_gauge_vec(
+            registry,
+            cfg,
+            "cgroup_memory_events_total",
+            "Cumulative memory events from memory.events",
+            &["type"],
+        )?;
+
+        Ok(Self {
+            cpu_usage_seconds,
+            cpu_user_seconds,
+            cpu_system_seconds,
+            cpu_nr_periods,
+            cpu_nr_throttled,
+            cpu_throttled_seconds,
+            cpu_limit_cores,
+            mem_current_bytes,
+            mem_peak_bytes,
+            mem_max_bytes,
+            mem_high_bytes,
+            mem_low_bytes,
+            mem_events_total,
+        })
+    }
+}
+
+impl ProcessMetrics {
+    pub fn new(registry: &Registry, cfg: &Config) -> Result<Self> {
+        let cpu_user_seconds = gauge(
+            registry,
+            cfg,
+            "process_cpu_user_seconds",
+            "User CPU time for observed process (/proc/<pid>/stat)",
+        )?;
+
+        let cpu_system_seconds = gauge(
+            registry,
+            cfg,
+            "process_cpu_system_seconds",
+            "System CPU time for observed process",
+        )?;
+
+        let start_time_seconds = gauge(
+            registry,
+            cfg,
+            "process_start_time_seconds",
+            "Start time of observed process since epoch seconds",
+        )?;
+
+        let mem_rss_bytes = gauge(
+            registry,
+            cfg,
+            "process_memory_rss_bytes",
+            "Resident set size of observed process",
+        )?;
+
+        let mem_vms_bytes = gauge(
+            registry,
+            cfg,
+            "process_memory_vms_bytes",
+            "Virtual memory size of observed process",
+        )?;
+
+        let mem_swap_bytes = gauge(
+            registry,
+            cfg,
+            "process_memory_swap_bytes",
+            "Swap usage of observed process",
+        )?;
+
+        let io_rchar_bytes_total = gauge(
+            registry,
+            cfg,
+            "process_io_rchar_bytes_total",
+            "Characters read (rchar) from /proc/<pid>/io",
+        )?;
+
+        let io_wchar_bytes_total = gauge(
+            registry,
+            cfg,
+            "process_io_wchar_bytes_total",
+            "Characters written (wchar) from /proc/<pid>/io",
+        )?;
+
+        let io_syscr_total = gauge(
+            registry,
+            cfg,
+            "process_io_syscr_total",
+            "Number of read syscalls (syscr) from /proc/<pid>/io",
+        )?;
+
+        let io_syscw_total = gauge(
+            registry,
+            cfg,
+            "process_io_syscw_total",
+            "Number of write syscalls (syscw) from /proc/<pid>/io",
+        )?;
+
+        let io_read_bytes_total = gauge(
+            registry,
+            cfg,
+            "process_io_read_bytes_total",
+            "Bytes read from storage (read_bytes) from /proc/<pid>/io",
+        )?;
+
+        let io_write_bytes_total = gauge(
+            registry,
+            cfg,
+            "process_io_write_bytes_total",
+            "Bytes written to storage (write_bytes) from /proc/<pid>/io",
+        )?;
+
+        let io_cancelled_write_bytes_total = gauge(
+            registry,
+            cfg,
+            "process_io_cancelled_write_bytes_total",
+            "Bytes of cancelled write IO (cancelled_write_bytes) from /proc/<pid>/io",
+        )?;
+
+        let uptime_seconds = gauge(
+            registry,
+            cfg,
+            "process_uptime_seconds",
+            "Time in seconds the observed process has been running",
+        )?;
+
+        Ok(Self {
+            cpu_user_seconds,
+            cpu_system_seconds,
+            start_time_seconds,
+            mem_rss_bytes,
+            mem_vms_bytes,
+            mem_swap_bytes,
+            io_rchar_bytes_total,
+            io_wchar_bytes_total,
+            io_syscr_total,
+            io_syscw_total,
+            io_read_bytes_total,
+            io_write_bytes_total,
+            io_cancelled_write_bytes_total,
+            uptime_seconds, // <- přidat
+        })
+    }
+}
+
+fn downward_info_metric(registry: &Registry, cfg: &Config) -> Result<IntGaugeVec> {
+    let opts = make_opts(
+        "kubernetes_downward_info",
+        "Downward API fields exposed as labels; value is always 1.",
+        cfg.metrics_prefix.clone(),
+        cfg.static_labels.clone(),
+    );
+
+    let gauge_vec =
+        IntGaugeVec::new(opts, &["field", "value"]).context("create downward_info gauge vec")?;
+
+    registry
+        .register(Box::new(gauge_vec.clone()))
+        .context("register downward_info")?;
+
+    Ok(gauge_vec)
+}
+
+// ---- helpers na tvorbu metrik ----
+
+fn make_opts(
+    name: &str,
+    help: &str,
+    namespace: Option<String>,
+    const_labels: HashMap<String, String>,
+) -> Opts {
+    let mut opts = Opts::new(name, help);
+    if let Some(ns) = namespace {
+        if !ns.is_empty() {
+            opts = opts.namespace(ns);
+        }
+    }
+    if !const_labels.is_empty() {
+        opts = opts.const_labels(const_labels);
+    }
+    opts
+}
+
+fn gauge(registry: &Registry, cfg: &Config, name: &str, help: &str) -> Result<Gauge> {
+    let opts = make_opts(
+        name,
+        help,
+        cfg.metrics_prefix.clone(),
+        cfg.static_labels.clone(),
+    );
+    let g = Gauge::with_opts(opts).context(format!("create gauge {}", name))?;
+    registry
+        .register(Box::new(g.clone()))
+        .context(format!("register gauge {}", name))?;
+    Ok(g)
+}
+
+fn int_gauge(registry: &Registry, cfg: &Config, name: &str, help: &str) -> Result<IntGauge> {
+    let opts = make_opts(
+        name,
+        help,
+        cfg.metrics_prefix.clone(),
+        cfg.static_labels.clone(),
+    );
+    let g = IntGauge::with_opts(opts).context(format!("create int gauge {}", name))?;
+    registry
+        .register(Box::new(g.clone()))
+        .context(format!("register int gauge {}", name))?;
+    Ok(g)
+}
+
+fn int_gauge_vec(
+    registry: &Registry,
+    cfg: &Config,
+    name: &str,
+    help: &str,
+    labels: &[&str],
+) -> Result<IntGaugeVec> {
+    let opts = make_opts(
+        name,
+        help,
+        cfg.metrics_prefix.clone(),
+        cfg.static_labels.clone(),
+    );
+    let v = IntGaugeVec::new(opts, labels).context(format!("create int gauge vec {}", name))?;
+    registry
+        .register(Box::new(v.clone()))
+        .context(format!("register int gauge vec {}", name))?;
+    Ok(v)
+}
