@@ -43,10 +43,23 @@ pub struct ProcessMetrics {
     pub uptime_seconds: Gauge, // <- NOVÉ
 }
 
+/// Síťové metriky pro jeden interface (NET_INTERFACE).
+pub struct NetMetrics {
+    pub rx_bytes_total: Gauge,
+    pub tx_bytes_total: Gauge,
+    pub rx_packets_total: Gauge,
+    pub tx_packets_total: Gauge,
+    pub rx_errors_total: Gauge,
+    pub tx_errors_total: Gauge,
+    pub rx_dropped_total: Gauge,
+    pub tx_dropped_total: Gauge,
+}
+
 pub struct Metrics {
     pub registry: Registry,
     pub cgroup: CgroupMetrics,
     pub process: ProcessMetrics,
+    pub net: NetMetrics,
     /// DownwardAPI info: field + value, vždy 1 sample
     pub downward_info: IntGaugeVec,
 }
@@ -57,12 +70,14 @@ impl Metrics {
 
         let cgroup = CgroupMetrics::new(&registry, cfg)?;
         let process = ProcessMetrics::new(&registry, cfg)?;
+        let net = NetMetrics::new(&registry, cfg)?;
         let downward_info = downward_info_metric(&registry, cfg)?;
 
         Ok(Self {
             registry,
             cgroup,
             process,
+            net,
             downward_info,
         })
     }
@@ -295,6 +310,73 @@ impl ProcessMetrics {
             io_write_bytes_total,
             io_cancelled_write_bytes_total,
             uptime_seconds, // <- přidat
+        })
+    }
+}
+
+impl NetMetrics {
+    pub fn new(registry: &Registry, cfg: &Config) -> Result<Self> {
+        let rx_bytes_total = gauge(
+            registry,
+            cfg,
+            "container_network_receive_bytes_total",
+            "Network bytes received on NET_INTERFACE as seen from container (/sys/class/net/<iface>/statistics/rx_bytes)",
+        )?;
+        let tx_bytes_total = gauge(
+            registry,
+            cfg,
+            "container_network_transmit_bytes_total",
+            "Network bytes transmitted on NET_INTERFACE (/sys/class/net/<iface>/statistics/tx_bytes)",
+        )?;
+
+        let rx_packets_total = gauge(
+            registry,
+            cfg,
+            "container_network_receive_packets_total",
+            "Network packets received on NET_INTERFACE (/sys/class/net/<iface>/statistics/rx_packets)",
+        )?;
+        let tx_packets_total = gauge(
+            registry,
+            cfg,
+            "container_network_transmit_packets_total",
+            "Network packets transmitted on NET_INTERFACE (/sys/class/net/<iface>/statistics/tx_packets)",
+        )?;
+
+        let rx_errors_total = gauge(
+            registry,
+            cfg,
+            "container_network_receive_errors_total",
+            "Receive errors on NET_INTERFACE (/sys/class/net/<iface>/statistics/rx_errors)",
+        )?;
+        let tx_errors_total = gauge(
+            registry,
+            cfg,
+            "container_network_transmit_errors_total",
+            "Transmit errors on NET_INTERFACE (/sys/class/net/<iface>/statistics/tx_errors)",
+        )?;
+
+        let rx_dropped_total = gauge(
+            registry,
+            cfg,
+            "container_network_receive_dropped_total",
+            "Dropped receive packets on NET_INTERFACE (/sys/class/net/<iface>/statistics/rx_dropped)",
+        )?;
+        let tx_dropped_total = gauge(
+            registry,
+            cfg,
+            "container_network_transmit_dropped_total",
+            "Dropped transmit packets on NET_INTERFACE (/sys/class/net/<iface>/statistics/tx_dropped)",
+        )?;
+
+        Ok(Self {
+            rx_bytes_total,
+            tx_bytes_total,
+            rx_packets_total,
+            tx_packets_total,
+            rx_errors_total,
+            tx_errors_total,
+            rx_dropped_total,
+            tx_dropped_total,
         })
     }
 }

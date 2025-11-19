@@ -2,6 +2,7 @@ mod cgroup;
 mod config;
 mod downward;
 mod metrics;
+mod net;
 mod procfs;
 
 use std::{convert::Infallible, net::SocketAddr, sync::Arc, time::Duration};
@@ -18,7 +19,7 @@ use tokio::net::TcpListener;
 
 use crate::{
     cgroup as cgroup_mod, config::Config, downward as downward_mod, metrics::Metrics,
-    procfs as procfs_mod,
+    net as net_mod, procfs as procfs_mod,
 };
 
 struct AppState {
@@ -90,6 +91,14 @@ fn update_metrics(state: &AppState) -> Result<()> {
         if let Err(e) = procfs_mod::update(&state.metrics.process, pid) {
             eprintln!("error updating proc metrics for pid {}: {:?}", pid, e);
         }
+    }
+
+    // Network metrics
+    if let Err(e) = net_mod::update(&state.metrics.net, &state.cfg.net_interface) {
+        eprintln!(
+            "error updating net metrics for iface {}: {:?}",
+            state.cfg.net_interface, e
+        );
     }
 
     Ok(())

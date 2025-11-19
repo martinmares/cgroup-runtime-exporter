@@ -18,6 +18,10 @@ pub struct Config {
     /// Interval (v sekundách), jak často se mají metriky aktualizovat na pozadí.
     /// Default 5s, minimum 1s.
     pub update_interval_secs: u64,
+
+    /// Network interface, který chceme sledovat (např. "eth0").
+    /// Default: "eth0".
+    pub net_interface: String,
 }
 
 impl Config {
@@ -49,6 +53,8 @@ impl Config {
             .unwrap_or(5)
             .max(1); // nechceme 0 → busy loop
 
+        let net_interface = env::var("NET_INTERFACE").unwrap_or_else(|_| "eth0".to_string());
+
         Ok(Self {
             listen_addr,
             cgroup_root: PathBuf::from(cgroup_root),
@@ -57,6 +63,7 @@ impl Config {
             metrics_prefix,
             static_labels,
             update_interval_secs,
+            net_interface,
         })
     }
 }
