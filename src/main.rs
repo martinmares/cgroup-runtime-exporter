@@ -4,14 +4,17 @@ mod downward;
 mod metrics;
 mod procfs;
 
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{convert::Infallible, net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::Result;
-use hyper::{
-    Body, Request, Response, Server, StatusCode,
-    service::{make_service_fn, service_fn},
-};
+use http_body_util::Full;
+use hyper::body::{Bytes, Incoming};
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper::{Request, Response, StatusCode};
+use hyper_util::rt::TokioIo;
 use prometheus::{Encoder, TextEncoder};
+use tokio::net::TcpListener;
 
 use crate::{
     cgroup as cgroup_mod, config::Config, downward as downward_mod, metrics::Metrics,
@@ -29,14 +32,14 @@ async fn main() -> Result<()> {
     let metrics = Metrics::new(&cfg)?;
     let state = Arc::new(AppState { cfg, metrics });
 
-    // DownwardAPI je nepovinné - pokud není DIR, nic se neděje
+    // DownwardAPI je nepovinné – pokud není DIR, nic se neděje
     if let Some(ref dir) = state.cfg.downward_dir {
         if let Err(e) = downward_mod::init_downward_info(&state.metrics, dir) {
             eprintln!("failed to init downward api info: {:?}", e);
         }
     }
 
-    // Background update loop - cache metrik
+    // Background update loop – cache metrik
     {
         let state = state.clone();
         tokio::spawn(async move {
@@ -50,31 +53,30 @@ async fn main() -> Result<()> {
         });
     }
 
-    // listen_addr si vytáhneme před tím, než state přesuneme do closure
-    let addr = state.cfg.listen_addr;
-
+    let addr: SocketAddr = state.cfg.listen_addr;
     println!(
         "Starting exporter on {}, update interval {}s",
         addr, state.cfg.update_interval_secs
     );
 
-    let make_svc_state = state.clone();
-    let make_svc = make_service_fn(move |_conn| {
-        let state = make_svc_state.clone();
-        async move {
-            Ok::<_, Infallible>(service_fn(move |req| {
-                let state = state.clone();
+    // hyper 1.x už nemá "Server::bind"; použijeme TcpListener + http1::Builder
+    let listener = TcpListener::bind(addr).await?;
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let io = TokioIo::new(stream);
+        let state_clone = state.clone();
+
+        tokio::spawn(async move {
+            let service = service_fn(move |req: Request<Incoming>| {
+                let state = state_clone.clone();
                 async move { handle_request(req, state).await }
-            }))
-        }
-    });
+            });
 
-    let server = Server::bind(&addr).serve(make_svc);
-    if let Err(e) = server.await {
-        eprintln!("server error: {}", e);
+            if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
+                eprintln!("Error serving connection: {:?}", err);
+            }
+        });
     }
-
-    Ok(())
 }
 
 fn update_metrics(state: &AppState) -> Result<()> {
@@ -94,19 +96,21 @@ fn update_metrics(state: &AppState) -> Result<()> {
 }
 
 async fn handle_request(
-    req: Request<Body>,
+    req: Request<Incoming>,
     state: Arc<AppState>,
-) -> Result<Response<Body>, Infallible> {
+) -> Result<Response<Full<Bytes>>, Infallible> {
     let path = req.uri().path();
 
-    match path {
-        "/metrics" => Ok(metrics_response(&state)),
-        "/healthz" => Ok(healthz_response()),
-        _ => Ok(not_found_response()),
-    }
+    let resp = match path {
+        "/metrics" => metrics_response(&state),
+        "/healthz" => healthz_response(),
+        _ => not_found_response(),
+    };
+
+    Ok(resp)
 }
 
-fn metrics_response(state: &AppState) -> Response<Body> {
+fn metrics_response(state: &AppState) -> Response<Full<Bytes>> {
     let encoder = TextEncoder::new();
     let metric_families = state.metrics.registry.gather();
 
@@ -118,23 +122,22 @@ fn metrics_response(state: &AppState) -> Response<Body> {
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", encoder.format_type())
-        .body(Body::from(buffer))
+        .body(Full::new(Bytes::from(buffer)))
         .unwrap()
 }
 
-fn healthz_response() -> Response<Body> {
-    // jednoduchý healthcheck - pokud běží proces a jsem schopný odpovědět, je to OK
+fn healthz_response() -> Response<Full<Bytes>> {
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "text/plain; charset=utf-8")
-        .body(Body::from("ok\n"))
+        .body(Full::new(Bytes::from_static(b"ok\n")))
         .unwrap()
 }
 
-fn not_found_response() -> Response<Body> {
+fn not_found_response() -> Response<Full<Bytes>> {
     Response::builder()
         .status(StatusCode::NOT_FOUND)
         .header("Content-Type", "text/plain; charset=utf-8")
-        .body(Body::from("not found\n"))
+        .body(Full::new(Bytes::from_static(b"not found\n")))
         .unwrap()
 }
