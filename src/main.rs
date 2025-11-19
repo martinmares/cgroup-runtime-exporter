@@ -6,6 +6,8 @@ mod net;
 mod procfs;
 
 use std::{convert::Infallible, net::SocketAddr, sync::Arc, time::Duration};
+use tracing::{debug, error, info, warn};
+use tracing_subscriber::EnvFilter;
 
 use anyhow::Result;
 use http_body_util::Full;
@@ -29,34 +31,39 @@ struct AppState {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // tracing/logging init
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
+
     let cfg = Config::from_env()?;
     let metrics = Metrics::new(&cfg)?;
     let state = Arc::new(AppState { cfg, metrics });
 
-    // DownwardAPI je nepovinné – pokud není DIR, nic se neděje
+    // DownwardAPI je nepovinné - pokud není DIR, nic se neděje
     if let Some(ref dir) = state.cfg.downward_dir {
         if let Err(e) = downward_mod::init_downward_info(&state.metrics, dir) {
-            eprintln!("failed to init downward api info: {:?}", e);
+            error!("failed to init downward api info: {:?}", e);
         }
     }
 
-    // Background update loop – cache metrik
+    // Background update loop - cache metrik
     {
         let state = state.clone();
         tokio::spawn(async move {
             let interval = Duration::from_secs(state.cfg.update_interval_secs);
             loop {
                 if let Err(e) = update_metrics(&state) {
-                    eprintln!("error updating metrics: {:?}", e);
+                    error!("error updating metrics: {:?}", e);
                 }
+                debug!("metrics updated, sleep {}s", interval.as_secs());
                 tokio::time::sleep(interval).await;
             }
         });
     }
 
     let addr: SocketAddr = state.cfg.listen_addr;
-    println!(
-        "Starting exporter on {}, update interval {}s",
+    info!(
+        "starting exporter on {}, update interval {}s",
         addr, state.cfg.update_interval_secs
     );
 
@@ -74,7 +81,7 @@ async fn main() -> Result<()> {
             });
 
             if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
-                eprintln!("Error serving connection: {:?}", err);
+                error!("Error serving connection: {:?}", err);
             }
         });
     }
@@ -83,21 +90,21 @@ async fn main() -> Result<()> {
 fn update_metrics(state: &AppState) -> Result<()> {
     // Cgroup metrics
     if let Err(e) = cgroup_mod::update(&state.metrics.cgroup, &state.cfg.cgroup_root) {
-        eprintln!("error updating cgroup metrics: {:?}", e);
+        error!("error updating cgroup metrics: {:?}", e);
     }
 
     // Per-PID metrics (pokud je nastaven TARGET_PID)
     if let Some(pid) = state.cfg.target_pid {
         if let Err(e) = procfs_mod::update(&state.metrics.process, pid) {
-            eprintln!("error updating proc metrics for pid {}: {:?}", pid, e);
+            error!("error updating proc metrics for pid {}: {:?}", pid, e);
         }
     }
 
     // Network metrics
     if let Err(e) = net_mod::update(&state.metrics.net, &state.cfg.net_interface) {
-        eprintln!(
+        error!(
             "error updating net metrics for iface {}: {:?}",
-            state.cfg.net_interface, e
+            state.cfg.net_interface, e,
         );
     }
 
@@ -120,12 +127,13 @@ async fn handle_request(
 }
 
 fn metrics_response(state: &AppState) -> Response<Full<Bytes>> {
+    debug!("scrape requested");
     let encoder = TextEncoder::new();
     let metric_families = state.metrics.registry.gather();
 
     let mut buffer = Vec::new();
     if let Err(e) = encoder.encode(&metric_families, &mut buffer) {
-        eprintln!("could not encode metrics: {:?}", e);
+        error!("could not encode metrics: {:?}", e);
     }
 
     Response::builder()
@@ -136,6 +144,7 @@ fn metrics_response(state: &AppState) -> Response<Full<Bytes>> {
 }
 
 fn healthz_response() -> Response<Full<Bytes>> {
+    debug!("healthz requested");
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "text/plain; charset=utf-8")
@@ -144,6 +153,7 @@ fn healthz_response() -> Response<Full<Bytes>> {
 }
 
 fn not_found_response() -> Response<Full<Bytes>> {
+    warn!("not_found requested");
     Response::builder()
         .status(StatusCode::NOT_FOUND)
         .header("Content-Type", "text/plain; charset=utf-8")
