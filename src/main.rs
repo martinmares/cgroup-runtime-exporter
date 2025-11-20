@@ -1,6 +1,7 @@
 mod cgroup;
 mod config;
 mod downward;
+mod logging;
 mod metrics;
 mod net;
 mod procfs;
@@ -42,7 +43,7 @@ async fn main() -> Result<()> {
     // DownwardAPI je nepovinné - pokud není DIR, nic se neděje
     if let Some(ref dir) = state.cfg.downward_dir {
         if let Err(e) = downward_mod::init_downward_info(&state.metrics, dir) {
-            error!("failed to init downward api info: {:?}", e);
+            log_anyhow_with_source!(e, "init downward api info failed");
         }
     }
 
@@ -53,9 +54,13 @@ async fn main() -> Result<()> {
             let interval = Duration::from_secs(state.cfg.update_interval_secs);
             loop {
                 if let Err(e) = update_metrics(&state) {
-                    error!("error updating metrics: {:?}", e);
+                    log_anyhow_with_source!(e, "updating metrics failed");
                 }
-                debug!("metrics updated, sleep {}s", interval.as_secs());
+                debug!(
+                    sleep_secs = interval.as_secs(),
+                    "metrics updated, going to sleep"
+                );
+
                 tokio::time::sleep(interval).await;
             }
         });
@@ -63,8 +68,9 @@ async fn main() -> Result<()> {
 
     let addr: SocketAddr = state.cfg.listen_addr;
     info!(
-        "starting exporter on {}, update interval {}s",
-        addr, state.cfg.update_interval_secs
+        listen_addr = %addr,
+        interval_secs = state.cfg.update_interval_secs,
+        "starting"
     );
 
     // hyper 1.x už nemá "Server::bind"; použijeme TcpListener + http1::Builder
@@ -80,8 +86,8 @@ async fn main() -> Result<()> {
                 async move { handle_request(req, state).await }
             });
 
-            if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
-                error!("Error serving connection: {:?}", err);
+            if let Err(e) = http1::Builder::new().serve_connection(io, service).await {
+                log_hypererr_with_source!(e, "serving connection failed");
             }
         });
     }
@@ -90,22 +96,19 @@ async fn main() -> Result<()> {
 fn update_metrics(state: &AppState) -> Result<()> {
     // Cgroup metrics
     if let Err(e) = cgroup_mod::update(&state.metrics.cgroup, &state.cfg.cgroup_root) {
-        error!("error updating cgroup metrics: {:?}", e);
+        log_anyhow_with_source!(e, "updating cgroup metrics failed");
     }
 
     // Per-PID metrics (pokud je nastaven TARGET_PID)
     if let Some(pid) = state.cfg.target_pid {
         if let Err(e) = procfs_mod::update(&state.metrics.process, pid) {
-            error!("error updating proc metrics for pid {}: {:?}", pid, e);
+            log_anyhow_with_source!(e, pid = %pid, "updating proc metrics failed");
         }
     }
 
     // Network metrics
     if let Err(e) = net_mod::update(&state.metrics.net, &state.cfg.net_interface) {
-        error!(
-            "error updating net metrics for iface {}: {:?}",
-            state.cfg.net_interface, e,
-        );
+        log_anyhow_with_source!(e, iface = %state.cfg.net_interface, "updating net metrics failed");
     }
 
     Ok(())
@@ -133,7 +136,7 @@ fn metrics_response(state: &AppState) -> Response<Full<Bytes>> {
 
     let mut buffer = Vec::new();
     if let Err(e) = encoder.encode(&metric_families, &mut buffer) {
-        error!("could not encode metrics: {:?}", e);
+        log_promerror_with_source!(e, "could not encode metrics");
     }
 
     Response::builder()
