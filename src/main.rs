@@ -7,7 +7,7 @@ mod net;
 mod procfs;
 
 use std::{convert::Infallible, net::SocketAddr, sync::Arc, time::Duration};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use anyhow::Result;
@@ -87,7 +87,7 @@ async fn main() -> Result<()> {
             });
 
             if let Err(e) = http1::Builder::new().serve_connection(io, service).await {
-                log_hypererr_with_source!(e, "serving connection failed");
+                log_error_display!(e, "serving connection failed");
             }
         });
     }
@@ -136,7 +136,7 @@ fn metrics_response(state: &AppState) -> Response<Full<Bytes>> {
 
     let mut buffer = Vec::new();
     if let Err(e) = encoder.encode(&metric_families, &mut buffer) {
-        log_promerror_with_source!(e, "could not encode metrics");
+        log_error_display!(e, "could not encode metrics");
     }
 
     Response::builder()
