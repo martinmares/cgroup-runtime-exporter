@@ -41,8 +41,12 @@ impl Config {
 
         let metrics_prefix = env::var("METRICS_PREFIX")
             .ok()
-            .filter(|s| !s.is_empty())
-            .or_else(|| env::var("METRICS_NAMESPACE").ok().filter(|s| !s.is_empty()));
+            .and_then(normalize_prefix)
+            .or_else(|| {
+                env::var("METRICS_NAMESPACE")
+                    .ok()
+                    .and_then(normalize_prefix)
+            });
 
         let static_labels =
             parse_static_labels(&env::var("METRICS_STATIC_LABELS").unwrap_or_default());
@@ -89,4 +93,21 @@ fn parse_static_labels(s: &str) -> HashMap<String, String> {
     }
 
     map
+}
+
+fn normalize_prefix(raw: String) -> Option<String> {
+    // ořežeme whitespace
+    let trimmed = raw.trim();
+
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // ořežeme všechny trailing '_' a pak přidáme přesně jeden
+    let trimmed = trimmed.trim_end_matches('_');
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    Some(format!("{trimmed}_"))
 }
