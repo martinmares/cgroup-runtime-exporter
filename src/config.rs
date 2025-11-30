@@ -67,12 +67,12 @@ impl Config {
             .ok()
             .and_then(|s| s.parse::<f64>().ok());
 
-        let memory_requests_bytes = env::var("MEMORY_REQUESTS_MB")
+        let memory_requests_bytes = env::var("MEMORY_REQUESTS_MIB")
             .ok()
             .and_then(|s| s.parse::<f64>().ok())
             .map(|mb| mb * 1024.0 * 1024.0); // 1 MiB → bajty
 
-        let memory_limits_bytes = env::var("MEMORY_LIMITS_MB")
+        let memory_limits_bytes = env::var("MEMORY_LIMITS_MIB")
             .ok()
             .and_then(|s| s.parse::<f64>().ok())
             .map(|mb| mb * 1024.0 * 1024.0);
