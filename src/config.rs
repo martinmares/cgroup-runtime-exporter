@@ -96,18 +96,17 @@ fn parse_static_labels(s: &str) -> HashMap<String, String> {
 }
 
 fn normalize_prefix(raw: String) -> Option<String> {
-    // ořežeme whitespace
     let trimmed = raw.trim();
 
     if trimmed.is_empty() {
         return None;
     }
 
-    // ořežeme všechny trailing '_' a pak přidáme přesně jeden
+    // ořežeme všechny trailing '_' a NEpřidáváme žádný zpátky
     let trimmed = trimmed.trim_end_matches('_');
     if trimmed.is_empty() {
         return None;
     }
 
-    Some(format!("{trimmed}_"))
+    Some(trimmed.to_string())
 }
