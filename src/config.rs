@@ -15,6 +15,14 @@ pub struct Config {
     /// Statické labely nalepené na všechny metriky
     pub static_labels: HashMap<String, String>,
 
+    /// K8s CPU requests/limits v millicores (z env, pokud jsou)
+    pub cpu_requests_mcpu: Option<f64>,
+    pub cpu_limits_mcpu: Option<f64>,
+
+    /// K8s memory requests/limits v bajtech (z env, pokud jsou)
+    pub memory_requests_bytes: Option<f64>,
+    pub memory_limits_bytes: Option<f64>,
+
     /// Interval (v sekundách), jak často se mají metriky aktualizovat na pozadí.
     /// Default 5s, minimum 1s.
     pub update_interval_secs: u64,
@@ -51,6 +59,24 @@ impl Config {
         let static_labels =
             parse_static_labels(&env::var("METRICS_STATIC_LABELS").unwrap_or_default());
 
+        let cpu_requests_mcpu = env::var("CPU_REQUESTS_MCPU")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok());
+
+        let cpu_limits_mcpu = env::var("CPU_LIMITS_MCPU")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok());
+
+        let memory_requests_bytes = env::var("MEMORY_REQUESTS_MB")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+            .map(|mb| mb * 1024.0 * 1024.0); // 1 MiB → bajty
+
+        let memory_limits_bytes = env::var("MEMORY_LIMITS_MB")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+            .map(|mb| mb * 1024.0 * 1024.0);
+
         let update_interval_secs = env::var("METRICS_UPDATE_INTERVAL_SECS")
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
@@ -66,6 +92,10 @@ impl Config {
             target_pid,
             metrics_prefix,
             static_labels,
+            cpu_requests_mcpu,
+            cpu_limits_mcpu,
+            memory_requests_bytes,
+            memory_limits_bytes,
             update_interval_secs,
             net_interface,
         })

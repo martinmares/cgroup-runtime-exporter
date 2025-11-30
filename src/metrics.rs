@@ -5,6 +5,14 @@ use prometheus::{Gauge, IntGauge, IntGaugeVec, Opts, Registry};
 
 use crate::config::Config;
 
+#[allow(dead_code)]
+pub struct ResourceMetrics {
+    pub cpu_requests_mcpu: Gauge,
+    pub cpu_limits_mcpu: Gauge,
+    pub memory_requests_bytes: Gauge,
+    pub memory_limits_bytes: Gauge,
+}
+
 pub struct CgroupMetrics {
     pub cpu_usage_seconds: Gauge,
     pub cpu_user_seconds: Gauge,
@@ -62,6 +70,8 @@ pub struct Metrics {
     pub net: NetMetrics,
     /// DownwardAPI info: field + value, vždy 1 sample
     pub downward_info: IntGaugeVec,
+    #[allow(dead_code)]
+    pub resources: Option<ResourceMetrics>, // může být None, když env chybí
 }
 
 impl Metrics {
@@ -72,6 +82,7 @@ impl Metrics {
         let process = ProcessMetrics::new(&registry, cfg)?;
         let net = NetMetrics::new(&registry, cfg)?;
         let downward_info = downward_info_metric(&registry, cfg)?;
+        let resources = ResourceMetrics::new(&registry, cfg)?; // Option<…>
 
         Ok(Self {
             registry,
@@ -79,6 +90,7 @@ impl Metrics {
             process,
             net,
             downward_info,
+            resources,
         })
     }
 }
@@ -378,6 +390,68 @@ impl NetMetrics {
             rx_dropped_total,
             tx_dropped_total,
         })
+    }
+}
+
+impl ResourceMetrics {
+    pub fn new(registry: &Registry, cfg: &Config) -> Result<Option<Self>> {
+        // pokud není nastaveno vůbec nic, metriky ani nevytvářej
+        if cfg.cpu_requests_mcpu.is_none()
+            && cfg.cpu_limits_mcpu.is_none()
+            && cfg.memory_requests_bytes.is_none()
+            && cfg.memory_limits_bytes.is_none()
+        {
+            return Ok(None);
+        }
+
+        let cpu_requests_mcpu = gauge(
+            registry,
+            cfg,
+            "k8s_cpu_requests_millicores",
+            "Kubernetes CPU requests for this container in millicores",
+        )?;
+
+        let cpu_limits_mcpu = gauge(
+            registry,
+            cfg,
+            "k8s_cpu_limits_millicores",
+            "Kubernetes CPU limits for this container in millicores",
+        )?;
+
+        let memory_requests_bytes = gauge(
+            registry,
+            cfg,
+            "k8s_memory_requests_bytes",
+            "Kubernetes memory requests for this container in bytes",
+        )?;
+
+        let memory_limits_bytes = gauge(
+            registry,
+            cfg,
+            "k8s_memory_limits_bytes",
+            "Kubernetes memory limits for this container in bytes",
+        )?;
+
+        // naplníme konstantní hodnoty (pokud existují)
+        if let Some(v) = cfg.cpu_requests_mcpu {
+            cpu_requests_mcpu.set(v);
+        }
+        if let Some(v) = cfg.cpu_limits_mcpu {
+            cpu_limits_mcpu.set(v);
+        }
+        if let Some(v) = cfg.memory_requests_bytes {
+            memory_requests_bytes.set(v);
+        }
+        if let Some(v) = cfg.memory_limits_bytes {
+            memory_limits_bytes.set(v);
+        }
+
+        Ok(Some(Self {
+            cpu_requests_mcpu,
+            cpu_limits_mcpu,
+            memory_requests_bytes,
+            memory_limits_bytes,
+        }))
     }
 }
 
