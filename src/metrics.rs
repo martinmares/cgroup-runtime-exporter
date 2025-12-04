@@ -102,6 +102,48 @@ pub struct Metrics {
     pub resources: Option<ResourceMetrics>, // může být None, když env chybí
 }
 
+fn gauge_with_const_label(
+    registry: &Registry,
+    cfg: &Config,
+    name: &str,
+    help: &str,
+    extra_label: Option<(&str, &str)>,
+) -> Result<Gauge> {
+    // vyrobíme kopii static_labels a případně přidáme node_name
+    let mut labels = cfg.static_labels.clone();
+    if let Some((k, v)) = extra_label {
+        labels.insert(k.to_string(), v.to_string());
+    }
+
+    let opts = make_opts(name, help, cfg.metrics_prefix.clone(), labels);
+    let g = Gauge::with_opts(opts).context(format!("create gauge {}", name))?;
+    registry
+        .register(Box::new(g.clone()))
+        .context(format!("register gauge {}", name))?;
+    Ok(g)
+}
+
+fn gauge_vec_with_const_label(
+    registry: &Registry,
+    cfg: &Config,
+    name: &str,
+    help: &str,
+    label_names: &[&str],
+    extra_label: Option<(&str, &str)>,
+) -> Result<GaugeVec> {
+    let mut labels = cfg.static_labels.clone();
+    if let Some((k, v)) = extra_label {
+        labels.insert(k.to_string(), v.to_string());
+    }
+
+    let opts = make_opts(name, help, cfg.metrics_prefix.clone(), labels);
+    let v = GaugeVec::new(opts, label_names).context(format!("create gauge vec {}", name))?;
+    registry
+        .register(Box::new(v.clone()))
+        .context(format!("register gauge vec {}", name))?;
+    Ok(v)
+}
+
 impl Metrics {
     pub fn new(cfg: &Config) -> Result<Self> {
         let registry = Registry::new_custom(None, None)?;
@@ -489,55 +531,72 @@ impl ResourceMetrics {
 
 impl HostMetrics {
     pub fn new(registry: &Registry, cfg: &Config) -> Result<Self> {
-        let cpu_seconds_total = gauge_vec(
+        // Pokud máme NODE_NAME, budeme ho lepit jako const label node_name="..."
+        let node_label = cfg.node_name.as_deref().map(|v| ("node_name", v));
+
+        let cpu_seconds_total = gauge_vec_with_const_label(
             registry,
             cfg,
             "host_cpu_seconds_total",
             "Host CPU time per mode as read from /proc/stat (seconds)",
             &["cpu", "mode"],
+            node_label,
         )?;
 
-        let memory_total_bytes = gauge(
+        let memory_total_bytes = gauge_with_const_label(
             registry,
             cfg,
             "host_memory_total_bytes",
             "MemTotal from /proc/meminfo (bytes)",
+            node_label,
         )?;
-        let memory_free_bytes = gauge(
+
+        let memory_free_bytes = gauge_with_const_label(
             registry,
             cfg,
             "host_memory_free_bytes",
             "MemFree from /proc/meminfo (bytes)",
+            node_label,
         )?;
-        let memory_available_bytes = gauge(
+
+        let memory_available_bytes = gauge_with_const_label(
             registry,
             cfg,
             "host_memory_available_bytes",
             "MemAvailable from /proc/meminfo (bytes)",
+            node_label,
         )?;
-        let memory_cached_bytes = gauge(
+
+        let memory_cached_bytes = gauge_with_const_label(
             registry,
             cfg,
             "host_memory_cached_bytes",
             "Cached from /proc/meminfo (bytes)",
+            node_label,
         )?;
-        let memory_buffers_bytes = gauge(
+
+        let memory_buffers_bytes = gauge_with_const_label(
             registry,
             cfg,
             "host_memory_buffers_bytes",
             "Buffers from /proc/meminfo (bytes)",
+            node_label,
         )?;
-        let swap_total_bytes = gauge(
+
+        let swap_total_bytes = gauge_with_const_label(
             registry,
             cfg,
             "host_swap_total_bytes",
             "SwapTotal from /proc/meminfo (bytes)",
+            node_label,
         )?;
-        let swap_free_bytes = gauge(
+
+        let swap_free_bytes = gauge_with_const_label(
             registry,
             cfg,
             "host_swap_free_bytes",
             "SwapFree from /proc/meminfo (bytes)",
+            node_label,
         )?;
 
         Ok(Self {
@@ -558,34 +617,13 @@ impl TcpMetrics {
         let connections = int_gauge_vec(
             registry,
             cfg,
-            "host_tcp_connections",
-            "Number of TCP connections by state and IP version from /proc/net/tcp{,6}",
+            "pod_tcp_connections",
+            "Number of TCP connections for this pod by state and IP version from /proc/net/tcp{,6}",
             &["state", "ip_version"],
         )?;
 
         Ok(Self { connections })
     }
-}
-
-/// Helper to create a GaugeVec pre-registered in the registry.
-fn gauge_vec(
-    registry: &Registry,
-    cfg: &Config,
-    name: &str,
-    help: &str,
-    labels: &[&str],
-) -> Result<GaugeVec> {
-    let opts = make_opts(
-        name,
-        help,
-        cfg.metrics_prefix.clone(),
-        cfg.static_labels.clone(),
-    );
-    let v = GaugeVec::new(opts, labels).context(format!("create gauge vec {}", name))?;
-    registry
-        .register(Box::new(v.clone()))
-        .context(format!("register gauge vec {}", name))?;
-    Ok(v)
 }
 
 fn downward_info_metric(registry: &Registry, cfg: &Config) -> Result<IntGaugeVec> {

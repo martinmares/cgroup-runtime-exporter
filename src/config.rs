@@ -30,6 +30,9 @@ pub struct Config {
     /// Network interface, který chceme sledovat (např. "eth0").
     /// Default: "eth0".
     pub net_interface: String,
+
+    /// Jméno nodu (pokud je k dispozici z env NODE_NAME)
+    pub node_name: Option<String>,
 }
 
 impl Config {
@@ -84,6 +87,7 @@ impl Config {
             .max(1); // nechceme 0 → busy loop
 
         let net_interface = env::var("NET_INTERFACE").unwrap_or_else(|_| "eth0".to_string());
+        let node_name = std::env::var("NODE_NAME").ok().filter(|s| !s.is_empty());
 
         Ok(Self {
             listen_addr,
@@ -98,6 +102,7 @@ impl Config {
             memory_limits_bytes,
             update_interval_secs,
             net_interface,
+            node_name,
         })
     }
 }

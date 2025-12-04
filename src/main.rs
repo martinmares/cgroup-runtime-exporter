@@ -39,6 +39,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
     let cfg = Config::from_env()?;
+
     let metrics = Metrics::new(&cfg)?;
     let state = Arc::new(AppState { cfg, metrics });
 
