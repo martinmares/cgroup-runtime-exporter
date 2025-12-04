@@ -405,52 +405,52 @@ impl NetMetrics {
         let rx_bytes_total = gauge(
             registry,
             cfg,
-            "container_network_receive_bytes_total",
+            "pod_network_receive_bytes_total",
             "Network bytes received on NET_INTERFACE as seen from container (/sys/class/net/<iface>/statistics/rx_bytes)",
         )?;
         let tx_bytes_total = gauge(
             registry,
             cfg,
-            "container_network_transmit_bytes_total",
+            "pod_network_transmit_bytes_total",
             "Network bytes transmitted on NET_INTERFACE (/sys/class/net/<iface>/statistics/tx_bytes)",
         )?;
 
         let rx_packets_total = gauge(
             registry,
             cfg,
-            "container_network_receive_packets_total",
+            "pod_network_receive_packets_total",
             "Network packets received on NET_INTERFACE (/sys/class/net/<iface>/statistics/rx_packets)",
         )?;
         let tx_packets_total = gauge(
             registry,
             cfg,
-            "container_network_transmit_packets_total",
+            "pod_network_transmit_packets_total",
             "Network packets transmitted on NET_INTERFACE (/sys/class/net/<iface>/statistics/tx_packets)",
         )?;
 
         let rx_errors_total = gauge(
             registry,
             cfg,
-            "container_network_receive_errors_total",
+            "pod_network_receive_errors_total",
             "Receive errors on NET_INTERFACE (/sys/class/net/<iface>/statistics/rx_errors)",
         )?;
         let tx_errors_total = gauge(
             registry,
             cfg,
-            "container_network_transmit_errors_total",
+            "pod_network_transmit_errors_total",
             "Transmit errors on NET_INTERFACE (/sys/class/net/<iface>/statistics/tx_errors)",
         )?;
 
         let rx_dropped_total = gauge(
             registry,
             cfg,
-            "container_network_receive_dropped_total",
+            "pod_network_receive_dropped_total",
             "Dropped receive packets on NET_INTERFACE (/sys/class/net/<iface>/statistics/rx_dropped)",
         )?;
         let tx_dropped_total = gauge(
             registry,
             cfg,
-            "container_network_transmit_dropped_total",
+            "pod_network_transmit_dropped_total",
             "Dropped transmit packets on NET_INTERFACE (/sys/class/net/<iface>/statistics/tx_dropped)",
         )?;
 
