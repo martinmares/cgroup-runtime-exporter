@@ -837,7 +837,7 @@
           "refId": "A"
         }
       ],
-      "title": "Process IO – logical write (wchar)",
+      "title": "Process IO - logical write (wchar)",
       "type": "timeseries"
     },
     {

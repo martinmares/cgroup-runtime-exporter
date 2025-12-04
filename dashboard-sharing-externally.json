@@ -12,7 +12,7 @@
       "name": "VAR_PREFIX",
       "type": "constant",
       "label": "Metrics prefix (METRICS_PREFIX)",
-      "value": "docker_",
+      "value": "tsm_",
       "description": ""
     }
   ],
@@ -929,7 +929,7 @@
           }
         }
       ],
-      "title": "Process IO – logical write (wchar)",
+      "title": "Process IO - logical write (wchar)",
       "type": "timeseries"
     },
     {
