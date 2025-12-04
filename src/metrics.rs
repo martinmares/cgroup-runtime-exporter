@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
-use prometheus::{Gauge, IntGauge, IntGaugeVec, Opts, Registry};
+use prometheus::{Gauge, GaugeVec, IntGauge, IntGaugeVec, Opts, Registry};
 
 use crate::config::Config;
 
@@ -62,12 +62,40 @@ pub struct NetMetrics {
     pub rx_dropped_total: Gauge,
     pub tx_dropped_total: Gauge,
 }
+#[allow(dead_code)]
+pub struct HostMetrics {
+    /// CPU time per mode as reported by /proc/stat (seconds).
+    /// Labels: cpu="all", mode="user|nice|system|idle|iowait|irq|softirq|steal|guest|guest_nice"
+    pub cpu_seconds_total: GaugeVec,
+
+    /// Memory totals from /proc/meminfo (bytes).
+    pub memory_total_bytes: Gauge,
+    pub memory_free_bytes: Gauge,
+    pub memory_available_bytes: Gauge,
+    pub memory_cached_bytes: Gauge,
+    pub memory_buffers_bytes: Gauge,
+    pub swap_total_bytes: Gauge,
+    pub swap_free_bytes: Gauge,
+}
+
+/// TCP connection counters per state and IP version as seen in /proc/net/tcp{,6}.
+/// Labels:
+///   state="ESTABLISHED|SYN_SENT|...|CLOSING|LISTEN|UNKNOWN"
+///   ip_version="4" or "6"
+#[allow(dead_code)]
+pub struct TcpMetrics {
+    pub connections: IntGaugeVec,
+}
 
 pub struct Metrics {
     pub registry: Registry,
     pub cgroup: CgroupMetrics,
     pub process: ProcessMetrics,
     pub net: NetMetrics,
+    #[allow(dead_code)]
+    pub host: HostMetrics,
+    #[allow(dead_code)]
+    pub tcp: TcpMetrics,
     /// DownwardAPI info: field + value, vždy 1 sample
     pub downward_info: IntGaugeVec,
     #[allow(dead_code)]
@@ -81,6 +109,8 @@ impl Metrics {
         let cgroup = CgroupMetrics::new(&registry, cfg)?;
         let process = ProcessMetrics::new(&registry, cfg)?;
         let net = NetMetrics::new(&registry, cfg)?;
+        let host = HostMetrics::new(&registry, cfg)?;
+        let tcp = TcpMetrics::new(&registry, cfg)?;
         let downward_info = downward_info_metric(&registry, cfg)?;
         let resources = ResourceMetrics::new(&registry, cfg)?; // Option<…>
 
@@ -89,6 +119,8 @@ impl Metrics {
             cgroup,
             process,
             net,
+            host,
+            tcp,
             downward_info,
             resources,
         })
@@ -453,6 +485,107 @@ impl ResourceMetrics {
             memory_limits_bytes,
         }))
     }
+}
+
+impl HostMetrics {
+    pub fn new(registry: &Registry, cfg: &Config) -> Result<Self> {
+        let cpu_seconds_total = gauge_vec(
+            registry,
+            cfg,
+            "host_cpu_seconds_total",
+            "Host CPU time per mode as read from /proc/stat (seconds)",
+            &["cpu", "mode"],
+        )?;
+
+        let memory_total_bytes = gauge(
+            registry,
+            cfg,
+            "host_memory_total_bytes",
+            "MemTotal from /proc/meminfo (bytes)",
+        )?;
+        let memory_free_bytes = gauge(
+            registry,
+            cfg,
+            "host_memory_free_bytes",
+            "MemFree from /proc/meminfo (bytes)",
+        )?;
+        let memory_available_bytes = gauge(
+            registry,
+            cfg,
+            "host_memory_available_bytes",
+            "MemAvailable from /proc/meminfo (bytes)",
+        )?;
+        let memory_cached_bytes = gauge(
+            registry,
+            cfg,
+            "host_memory_cached_bytes",
+            "Cached from /proc/meminfo (bytes)",
+        )?;
+        let memory_buffers_bytes = gauge(
+            registry,
+            cfg,
+            "host_memory_buffers_bytes",
+            "Buffers from /proc/meminfo (bytes)",
+        )?;
+        let swap_total_bytes = gauge(
+            registry,
+            cfg,
+            "host_swap_total_bytes",
+            "SwapTotal from /proc/meminfo (bytes)",
+        )?;
+        let swap_free_bytes = gauge(
+            registry,
+            cfg,
+            "host_swap_free_bytes",
+            "SwapFree from /proc/meminfo (bytes)",
+        )?;
+
+        Ok(Self {
+            cpu_seconds_total,
+            memory_total_bytes,
+            memory_free_bytes,
+            memory_available_bytes,
+            memory_cached_bytes,
+            memory_buffers_bytes,
+            swap_total_bytes,
+            swap_free_bytes,
+        })
+    }
+}
+
+impl TcpMetrics {
+    pub fn new(registry: &Registry, cfg: &Config) -> Result<Self> {
+        let connections = int_gauge_vec(
+            registry,
+            cfg,
+            "host_tcp_connections",
+            "Number of TCP connections by state and IP version from /proc/net/tcp{,6}",
+            &["state", "ip_version"],
+        )?;
+
+        Ok(Self { connections })
+    }
+}
+
+/// Helper to create a GaugeVec pre-registered in the registry.
+fn gauge_vec(
+    registry: &Registry,
+    cfg: &Config,
+    name: &str,
+    help: &str,
+    labels: &[&str],
+) -> Result<GaugeVec> {
+    let opts = make_opts(
+        name,
+        help,
+        cfg.metrics_prefix.clone(),
+        cfg.static_labels.clone(),
+    );
+    let v = GaugeVec::new(opts, labels).context(format!("create gauge vec {}", name))?;
+    registry
+        .register(Box::new(v.clone()))
+        .context(format!("register gauge vec {}", name))?;
+    Ok(v)
 }
 
 fn downward_info_metric(registry: &Registry, cfg: &Config) -> Result<IntGaugeVec> {

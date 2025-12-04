@@ -1,10 +1,12 @@
 mod cgroup;
 mod config;
 mod downward;
+mod host;
 mod logging;
 mod metrics;
 mod net;
 mod procfs;
+mod tcp;
 
 use std::{convert::Infallible, net::SocketAddr, sync::Arc, time::Duration};
 use tracing::{debug, info, warn};
@@ -21,8 +23,8 @@ use prometheus::{Encoder, TextEncoder};
 use tokio::net::TcpListener;
 
 use crate::{
-    cgroup as cgroup_mod, config::Config, downward as downward_mod, metrics::Metrics,
-    net as net_mod, procfs as procfs_mod,
+    cgroup as cgroup_mod, config::Config, downward as downward_mod, host as host_mod,
+    metrics::Metrics, net as net_mod, procfs as procfs_mod, tcp as tcp_mod,
 };
 
 struct AppState {
@@ -106,7 +108,17 @@ fn update_metrics(state: &AppState) -> Result<()> {
         }
     }
 
-    // Network metrics
+    // Host (node) metrics – /proc/stat + /proc/meminfo
+    if let Err(e) = host_mod::update(&state.metrics.host) {
+        log_anyhow_with_source!(e, "updating host metrics failed");
+    }
+
+    // TCP stack metrics – /proc/net/tcp{,6}
+    if let Err(e) = tcp_mod::update(&state.metrics.tcp) {
+        log_anyhow_with_source!(e, "updating tcp metrics failed");
+    }
+
+    // Network metrics (per-interface throughput)
     if let Err(e) = net_mod::update(&state.metrics.net, &state.cfg.net_interface) {
         log_anyhow_with_source!(e, iface = %state.cfg.net_interface, "updating net metrics failed");
     }
