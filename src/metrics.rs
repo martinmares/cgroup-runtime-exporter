@@ -618,7 +618,7 @@ impl TcpMetrics {
             registry,
             cfg,
             "pod_tcp_connections",
-            "Number of TCP connections for this pod by state and IP version from /proc/net/tcp{,6}",
+            "Number of TCP connections for this pod by state and IP version from /proc/net/tcp{4,6}",
             &["state", "ip_version"],
         )?;
 
