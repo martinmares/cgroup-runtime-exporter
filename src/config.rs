@@ -1,13 +1,27 @@
 use std::{collections::HashMap, env, net::SocketAddr, path::PathBuf};
 
 use anyhow::{Context, Result};
+use regex::Regex;
+use tracing::warn;
+
+#[derive(Debug, Clone)]
+pub enum ProcessTarget {
+    /// Původní chování - jeden konkrétní PID (TARGET_PID)
+    Single(i32),
+    /// Explicitní seznam PIDů (TARGET_PID_LIST)
+    PidList(Vec<i32>),
+    /// Regex pro výběr procesů podle cmdline/comm (TARGET_PID_REGEXP)
+    Regex(Regex),
+}
 
 #[derive(Debug, Clone)]
 pub struct Config {
     pub listen_addr: SocketAddr,
     pub cgroup_root: PathBuf,
     pub downward_dir: Option<PathBuf>,
-    pub target_pid: Option<i32>,
+
+    /// Jaké procesy sledovat v /proc (Single PID, list, nebo regexp).
+    pub process_target: Option<ProcessTarget>,
 
     /// Prefix / namespace pro všechny metriky (např. "nac", "kip")
     pub metrics_prefix: Option<String>,
@@ -36,7 +50,8 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_env() -> Result<Self> {
+    pub fn from_env() -> Result<Config> {
+        // --- základní věci ---
         let listen = env::var("EXPORTER_LISTEN").unwrap_or_else(|_| "0.0.0.0:9100".to_string());
         let listen_addr: SocketAddr = listen.parse().context("EXPORTER_LISTEN parse error")?;
 
@@ -44,12 +59,67 @@ impl Config {
 
         let downward_dir = env::var("DOWNWARD_API_DIR").ok().map(PathBuf::from);
 
-        let target_pid = env::var("TARGET_PID")
+        // --- Process target selection (PID / LIST / REGEXP) ---
+        let target_pid_env = env::var("TARGET_PID").ok().filter(|v| !v.trim().is_empty());
+        let target_pid_list_env = env::var("TARGET_PID_LIST")
             .ok()
-            .map(|s| s.parse::<i32>())
-            .transpose()
-            .context("TARGET_PID parse error")?;
+            .filter(|v| !v.trim().is_empty());
+        let target_pid_regexp_env = env::var("TARGET_PID_REGEXP")
+            .ok()
+            .filter(|v| !v.trim().is_empty());
 
+        // Priorita: TARGET_PID > TARGET_PID_LIST > TARGET_PID_REGEXP
+        let process_target = if let Some(pid_str) = target_pid_env {
+            if target_pid_list_env.is_some() {
+                warn!(
+                    "Both TARGET_PID and TARGET_PID_LIST are set - using TARGET_PID and ignoring TARGET_PID_LIST"
+                );
+            }
+            if target_pid_regexp_env.is_some() {
+                warn!(
+                    "Both TARGET_PID and TARGET_PID_REGEXP are set - using TARGET_PID and ignoring TARGET_PID_REGEXP"
+                );
+            }
+
+            let pid: i32 = pid_str
+                .parse()
+                .context("TARGET_PID parse error (expected integer PID)")?;
+            Some(ProcessTarget::Single(pid))
+        } else if let Some(list_str) = target_pid_list_env {
+            if target_pid_regexp_env.is_some() {
+                warn!(
+                    "Both TARGET_PID_LIST and TARGET_PID_REGEXP are set - using TARGET_PID_LIST and ignoring TARGET_PID_REGEXP"
+                );
+            }
+
+            let mut pids = Vec::new();
+            for part in list_str.split(',') {
+                let trimmed = part.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let pid: i32 = trimmed
+                    .parse()
+                    .with_context(|| format!("TARGET_PID_LIST parse error at '{trimmed}'"))?;
+                pids.push(pid);
+            }
+
+            if pids.is_empty() {
+                warn!(
+                    "TARGET_PID_LIST is set but no valid PIDs were parsed - process metrics will be disabled"
+                );
+                None
+            } else {
+                Some(ProcessTarget::PidList(pids))
+            }
+        } else if let Some(re_str) = target_pid_regexp_env {
+            let re = Regex::new(&re_str).context("TARGET_PID_REGEXP invalid regex")?;
+            Some(ProcessTarget::Regex(re))
+        } else {
+            None
+        };
+
+        // --- Metrics prefix / labels / K8s resource hints ---
         let metrics_prefix = env::var("METRICS_PREFIX")
             .ok()
             .and_then(normalize_prefix)
@@ -87,13 +157,14 @@ impl Config {
             .max(1); // nechceme 0 → busy loop
 
         let net_interface = env::var("NET_INTERFACE").unwrap_or_else(|_| "eth0".to_string());
-        let node_name = std::env::var("NODE_NAME").ok().filter(|s| !s.is_empty());
+
+        let node_name = env::var("NODE_NAME").ok().filter(|s| !s.is_empty());
 
         Ok(Self {
             listen_addr,
             cgroup_root: PathBuf::from(cgroup_root),
             downward_dir,
-            target_pid,
+            process_target,
             metrics_prefix,
             static_labels,
             cpu_requests_mcpu,

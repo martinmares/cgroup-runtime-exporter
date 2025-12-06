@@ -9,8 +9,6 @@ mod procfs;
 mod tcp;
 
 use std::{convert::Infallible, net::SocketAddr, sync::Arc, time::Duration};
-use tracing::{debug, info, warn};
-use tracing_subscriber::EnvFilter;
 
 use anyhow::Result;
 use http_body_util::Full;
@@ -21,6 +19,8 @@ use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use prometheus::{Encoder, TextEncoder};
 use tokio::net::TcpListener;
+use tracing::{debug, info, warn};
+use tracing_subscriber::EnvFilter;
 
 use crate::{
     cgroup as cgroup_mod, config::Config, downward as downward_mod, host as host_mod,
@@ -52,7 +52,7 @@ async fn main() -> Result<()> {
 
     // Background update loop - cache metrik
     {
-        let state = state.clone();
+        let state = Arc::clone(&state);
         tokio::spawn(async move {
             let interval = Duration::from_secs(state.cfg.update_interval_secs);
             loop {
@@ -81,11 +81,11 @@ async fn main() -> Result<()> {
     loop {
         let (stream, _) = listener.accept().await?;
         let io = TokioIo::new(stream);
-        let state_clone = state.clone();
+        let state_clone = Arc::clone(&state);
 
         tokio::spawn(async move {
             let service = service_fn(move |req: Request<Incoming>| {
-                let state = state_clone.clone();
+                let state = Arc::clone(&state_clone);
                 async move { handle_request(req, state).await }
             });
 
@@ -102,26 +102,30 @@ fn update_metrics(state: &AppState) -> Result<()> {
         log_anyhow_with_source!(e, "updating cgroup metrics failed");
     }
 
-    // Per-PID metrics (pokud je nastaven TARGET_PID)
-    if let Some(pid) = state.cfg.target_pid {
-        if let Err(e) = procfs_mod::update(&state.metrics.process, pid) {
-            log_anyhow_with_source!(e, pid = %pid, "updating proc metrics failed");
+    // Process metrics - nově umí Single PID, list PIDů i regexp
+    if let Some(ref target) = state.cfg.process_target {
+        if let Err(e) = procfs_mod::update_for_target(&state.metrics.process, target) {
+            log_anyhow_with_source!(e, "updating proc metrics failed");
         }
     }
 
-    // Host (node) metrics – /proc/stat + /proc/meminfo
+    // Host (node) metrics - /proc/stat + /proc/meminfo
     if let Err(e) = host_mod::update(&state.metrics.host) {
         log_anyhow_with_source!(e, "updating host metrics failed");
     }
 
-    // TCP stack metrics – /proc/net/tcp{,6}
+    // TCP stack metrics - /proc/net/tcp{,6}
     if let Err(e) = tcp_mod::update(&state.metrics.tcp) {
         log_anyhow_with_source!(e, "updating tcp metrics failed");
     }
 
     // Network metrics (per-interface throughput)
     if let Err(e) = net_mod::update(&state.metrics.net, &state.cfg.net_interface) {
-        log_anyhow_with_source!(e, iface = %state.cfg.net_interface, "updating net metrics failed");
+        log_anyhow_with_source!(
+            e,
+            iface = %state.cfg.net_interface,
+            "updating net metrics failed"
+        );
     }
 
     Ok(())
