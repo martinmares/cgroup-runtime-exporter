@@ -11,6 +11,11 @@ use anyhow::{Context, Result};
 use crate::metrics::TcpMetrics;
 
 /// Aktualizuje metriky TCP spojení (podle stavu a IP verze).
+///
+/// Pozn.: IPv4 spojení vedená přes IPv6 sockety (IPv4-mapped IPv6
+/// adresy `::ffff:W.X.Y.Z`) se v /proc/net/tcp6 objevují jako IPv6.
+/// Abychom dostali realistické počty IPv4/IPv6 spojení, rozeznáváme
+/// tyto adresy a počítáme je jako `ip_version = "4"`.
 pub fn update(metrics: &TcpMetrics) -> Result<()> {
     let mut counts: HashMap<(u8, &'static str), i64> = HashMap::new();
 
@@ -53,6 +58,10 @@ pub fn update(metrics: &TcpMetrics) -> Result<()> {
     Ok(())
 }
 
+/// Načte /proc/net/tcp{,6} a naplní počty spojení podle stavu a IP verze.
+///
+/// U `/proc/net/tcp6` navíc detekuje IPv4-mapped IPv6 adresy (prefix
+/// `0000000000000000FFFF0000`) a počítá taková spojení jako IPv4.
 fn collect_from_path(
     path: &str,
     ip_version: &'static str,
@@ -74,12 +83,47 @@ fn collect_from_path(
         }
 
         let st_hex = cols[3];
+
         if let Ok(code) = u8::from_str_radix(st_hex, 16) {
-            *counts.entry((code, ip_version)).or_insert(0) += 1;
+            // Ve /proc/net/tcp6 mohou být IPv4 spojení zabalená jako
+            // IPv4-mapped IPv6 (::ffff:W.X.Y.Z). Kernel je pak zapisuje
+            // do tcp6 s prefixem 0000000000000000FFFF0000 před IPv4
+            // adresou. Takové položky počítáme jako IPv4.
+            let mut effective_ip_version = ip_version;
+
+            if ip_version == "6" {
+                let local = cols.get(1).copied().unwrap_or_default();
+                let remote = cols.get(2).copied().unwrap_or_default();
+
+                if is_ipv4_mapped_addr(local) || is_ipv4_mapped_addr(remote) {
+                    effective_ip_version = "4";
+                }
+            }
+
+            *counts.entry((code, effective_ip_version)).or_insert(0) += 1;
         }
     }
 
     Ok(())
+}
+
+/// Vrací `true`, pokud je adresa z /proc/net/tcp6 ve formátu
+/// IPv4-mapped IPv6 (`::ffff:W.X.Y.Z`).
+fn is_ipv4_mapped_addr(addr_port: &str) -> bool {
+    // Formát je 32 hex znaků + ":" + port, např.:
+    // 0000000000000000FFFF00007095FB3A:0050
+    // kde prefix 0000000000000000FFFF0000 označuje IPv4-mapped adresu
+    // a posledních 8 hex znaků je IPv4 adresa v little-endian.
+    let (addr_hex, _) = match addr_port.split_once(':') {
+        Some(parts) => parts,
+        None => return false,
+    };
+
+    if addr_hex.len() < 24 {
+        return false;
+    }
+
+    addr_hex[..24].eq_ignore_ascii_case("0000000000000000FFFF0000")
 }
 
 fn tcp_state_name(code: u8) -> &'static str {
